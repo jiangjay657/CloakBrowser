@@ -20,6 +20,7 @@ context = launch_persistent_context(
         "--no-first-run",
         "--no-default-browser-check",
         "--fingerprint-platform=windows",
+        "--remote-debugging-port=9222"
     ],
 )
 
