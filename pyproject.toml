@@ -75,3 +75,7 @@ path = "cloakbrowser/_version.py"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = ["slow: marks tests that hit live detection sites (deselect with '-m \"not slow\"')"]
+
+
+[tool.black]
+target-version = ["py313"]

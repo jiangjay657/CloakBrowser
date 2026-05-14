@@ -22,3 +22,6 @@ pip install cloakbrowser
 $env:CLOAKBROWSER_BINARY_PATH="F:\cloakbrowser-windows-x64\chrome.exe"
 检查是否识别到本地二进制
 python -m cloakbrowser info
+
+
+python myTests\outlook.py
