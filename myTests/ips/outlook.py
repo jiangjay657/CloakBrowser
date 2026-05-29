@@ -40,7 +40,10 @@ def generate_outlook_email_prefix():
         lambda: f"{first}{random.randint(10, 99)}",
         lambda: f"{first}_{random.randint(1, 9999)}",
     ]
-    return random.choice(patterns)()
+    email_prefix = random.choice(patterns)() + f"{random.randint(1000, 9999)}"
+    first_name = first.capitalize()
+    last_name = last.capitalize()
+    return email_prefix, first_name, last_name
 
 
 def generate_password():
@@ -60,21 +63,6 @@ def generate_password():
     chars = required + remaining
     random.shuffle(chars)
     return "".join(chars)
-
-
-def derive_names_from_email_prefix(email_prefix):
-    separators = [".", "_", "-"]
-    for separator in separators:
-        parts = [part for part in email_prefix.split(separator) if part]
-        if len(parts) >= 2:
-            return parts[0].capitalize(), parts[1].capitalize()
-
-    letters = "".join(char for char in email_prefix if char.isalpha())
-    if len(letters) >= 6:
-        split_at = max(3, len(letters) // 2)
-        return letters[:split_at].capitalize(), letters[split_at:].capitalize()
-
-    return "James", "Smith"
 
 
 context = None
@@ -116,9 +104,8 @@ try:
     print("点击创建免费账号，当前 URL:", signup_page.url)
     print("页面标题:", signup_page.title())
 
-    email_prefix = generate_outlook_email_prefix()
+    email_prefix, first_name, last_name = generate_outlook_email_prefix()
     full_email = f"{email_prefix}@outlook.com"
-    first_name, last_name = derive_names_from_email_prefix(email_prefix)
 
     signup_page.get_by_label("New email").fill(email_prefix, timeout=30000)
     signup_page.get_by_role("button", name="Next").click(timeout=30000)
