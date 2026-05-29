@@ -1,3 +1,14 @@
+python -m pip install --upgrade "cloakbrowser[geoip]"
+
+# 显示当前安装信息
+python -m cloakbrowser info
+# Check for and download newer binary
+python -m cloakbrowser update
+# Remove cached binaries
+python -m cloakbrowser clear-cache
+
+
+
 默认就会随机生成指纹
 设置用户数据目录，避免和系统原来的 Chrome 用户数据目录冲突
 跳过首次运行引导流程,不要检查自己是不是系统默认浏览器
