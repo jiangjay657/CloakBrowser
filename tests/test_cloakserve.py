@@ -1,9 +1,12 @@
 """Unit tests for cloakserve — parse_connection_params, parse_cli_args, URL rewriting, connection tracking."""
 
+import asyncio
 import importlib.machinery
 import importlib.util
+import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -22,6 +25,8 @@ parse_connection_params = _mod.parse_connection_params
 parse_cli_args = _mod.parse_cli_args
 ChromePool = _mod.ChromePool
 _default_data_dir = _mod._default_data_dir
+_external_host = _mod._external_host
+_ws_scheme = _mod._ws_scheme
 SAFE_SEED_RE = _mod.SAFE_SEED_RE
 RESERVED_SEEDS = _mod.RESERVED_SEEDS
 
@@ -137,12 +142,233 @@ class TestParseCliArgs:
 
 
 # ---------------------------------------------------------------------------
+# External host detection
+# ---------------------------------------------------------------------------
+
+
+class TestExternalHost:
+    """Test public host selection for rewritten CDP WebSocket URLs."""
+
+    class _Request:
+        def __init__(self, headers, port=9222, scheme="http", query_string=""):
+            self.headers = headers
+            self.app = {"port": port}
+            self.scheme = scheme
+            self.query_string = query_string
+
+    def test_forwarded_host_overrides_internal_host(self):
+        request = self._Request({
+            "Host": "localhost:8080",
+            "X-Forwarded-Host": "cdp.example.com:443",
+        })
+        assert _external_host(request) == "cdp.example.com:443"
+
+    def test_forwarded_host_uses_first_value(self):
+        request = self._Request({
+            "Host": "internal:9222",
+            "X-Forwarded-Host": "public.example.com, internal:9222",
+        })
+        assert _external_host(request) == "public.example.com"
+
+    def test_blank_forwarded_host_falls_back_to_host_header(self):
+        request = self._Request({
+            "Host": "internal:9222",
+            "X-Forwarded-Host": "   ",
+        })
+        assert _external_host(request) == "internal:9222"
+
+    def test_falls_back_to_host_header(self):
+        request = self._Request({"Host": "localhost:9222"})
+        assert _external_host(request) == "localhost:9222"
+
+    def test_falls_back_to_app_port_without_host_header(self):
+        request = self._Request({}, port=9333)
+        assert _external_host(request) == "localhost:9333"
+
+    def test_forwarded_proto_selects_wss(self):
+        request = self._Request({"X-Forwarded-Proto": "https"}, scheme="http")
+        assert _ws_scheme(request) == "wss"
+
+    def test_forwarded_proto_uses_first_value(self):
+        request = self._Request({"X-Forwarded-Proto": "https, http"}, scheme="http")
+        assert _ws_scheme(request) == "wss"
+
+
+class TestHandlerURLRewriting:
+    """Verify handlers rewrite CDP WebSocket URLs to the public cloakserve endpoint."""
+
+    class _Request:
+        def __init__(self, headers, query_string="fingerprint=seed1", port=9222, scheme="http"):
+            self.headers = headers
+            self.query_string = query_string
+            self.scheme = scheme
+            self.app = {"port": port, "pool": self._Pool()}
+
+        class _Pool:
+            async def get_or_launch(self, **_kwargs):
+                return SimpleNamespace(cdp_port=5100)
+
+    class _FakeResponse:
+        def __init__(self, data):
+            self._data = data
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        async def json(self):
+            return self._data
+
+    class _FakeSession:
+        def __init__(self, data):
+            self._data = data
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return None
+
+        def get(self, *_args, **_kwargs):
+            return TestHandlerURLRewriting._FakeResponse(self._data)
+
+    def _patch_session(self, monkeypatch, data):
+        monkeypatch.setattr(
+            _mod.aiohttp,
+            "ClientSession",
+            lambda *_args, **_kwargs: self._FakeSession(data),
+        )
+
+    def test_json_version_uses_forwarded_host_and_proto(self, monkeypatch):
+        self._patch_session(monkeypatch, {
+            "webSocketDebuggerUrl": "ws://127.0.0.1:5100/devtools/browser/browser-guid",
+        })
+        request = self._Request({
+            "Host": "internal:9222",
+            "X-Forwarded-Host": "cdp.example.com",
+            "X-Forwarded-Proto": "https",
+        })
+
+        response = asyncio.run(_mod.handle_json_version(request))
+        payload = json.loads(response.text)
+
+        assert payload["webSocketDebuggerUrl"] == (
+            "wss://cdp.example.com/fingerprint/seed1/devtools/browser/browser-guid"
+        )
+
+    def test_json_list_uses_forwarded_host_and_proto(self, monkeypatch):
+        self._patch_session(monkeypatch, [{
+            "webSocketDebuggerUrl": "ws://127.0.0.1:5100/devtools/page/page-guid",
+        }])
+        request = self._Request({
+            "Host": "internal:9222",
+            "X-Forwarded-Host": "cdp.example.com",
+            "X-Forwarded-Proto": "https",
+        })
+
+        response = asyncio.run(_mod.handle_json_list(request))
+        payload = json.loads(response.text)
+
+        assert payload[0]["webSocketDebuggerUrl"] == (
+            "wss://cdp.example.com/fingerprint/seed1/devtools/page/page-guid"
+        )
+
+
+# ---------------------------------------------------------------------------
 # URL rewriting logic (pure string manipulation, extracted from handlers)
 # ---------------------------------------------------------------------------
 
 
-class TestURLRewriting:
-    """Test the URL rewriting logic used by /json/version and /json/list."""
+class TestWebSocketOriginGuard:
+    """Verify cloakserve rejects browser-origin CDP WebSocket hijacks."""
+
+    def test_absent_origin_allowed_for_non_browser_cdp_clients(self):
+        assert _mod._origin_is_allowed(None, "127.0.0.1:9555")
+
+    def test_matching_origin_host_allowed(self):
+        assert _mod._origin_is_allowed("http://127.0.0.1:9555", "127.0.0.1:9555")
+
+    def test_chrome_devtools_origin_allowed(self):
+        assert _mod._origin_is_allowed("devtools://devtools", "127.0.0.1:9555")
+        assert _mod._origin_is_allowed("chrome-devtools://devtools", "127.0.0.1:9555")
+
+    @pytest.mark.parametrize("origin", [
+        "http://attacker.example",
+        "https://attacker.example",
+        "http://PUBLIC_HOST:9555",
+        "http://attacker.example:9555",
+        "http://127.0.0.1:9555/",
+        "http://127.0.0.1:9555/path",
+        "http://127.0.0.1:9555?q=1",
+        "http://127.0.0.1:9555#fragment",
+        "http://user@127.0.0.1:9555",
+        "http://@127.0.0.1:9555",
+        "http://:@127.0.0.1:9555",
+        "http://127.0.0.1:",
+        "null",
+        "file://",
+    ])
+    def test_untrusted_browser_origins_rejected(self, origin):
+        assert not _mod._origin_is_allowed(origin, "127.0.0.1:9555")
+
+    def test_public_origin_matching_host_is_still_rejected(self):
+        assert not _mod._origin_is_allowed("http://attacker.example:9555", "attacker.example:9555")
+
+    @pytest.mark.parametrize("host", [
+        "user@127.0.0.1:9555",
+        "127.0.0.1:9555/path",
+        "127.0.0.1:9555?x=1",
+        "127.0.0.1:9555#fragment",
+        "127.0.0.1:9555, attacker.example:9555",
+        "@127.0.0.1:9555",
+        ":@127.0.0.1:9555",
+        "127.0.0.1:",
+        "[::1]:",
+    ])
+    def test_malformed_host_is_rejected_even_when_hostname_is_loopback(self, host):
+        assert not _mod._origin_is_allowed("http://127.0.0.1:9555", host)
+
+    def test_request_scheme_controls_host_default_port(self):
+        assert _mod._origin_is_allowed("https://localhost", "localhost", request_scheme="https")
+        assert not _mod._origin_is_allowed("https://localhost", "localhost", request_scheme="http")
+
+    def test_ws_handler_rejects_untrusted_origin_before_launching_chrome(self):
+        class RejectingPool:
+            async def get_or_launch(self, **_kwargs):
+                raise AssertionError("untrusted origin should be rejected before launching Chrome")
+
+        request = SimpleNamespace(
+            headers={"Host": "127.0.0.1:9555", "Origin": "http://attacker.example"},
+            app={"pool": RejectingPool()},
+            match_info={"path": "browser/browser-guid"},
+        )
+
+        response = asyncio.run(_mod.handle_ws_default(request))
+
+        assert response.status == 403
+        assert "untrusted" in response.text.lower()
+
+    def test_seed_ws_handler_rejects_untrusted_origin_before_launching_chrome(self):
+        class RejectingPool:
+            async def get_or_launch(self, **_kwargs):
+                raise AssertionError("untrusted origin should be rejected before launching Chrome")
+
+        request = SimpleNamespace(
+            headers={"Host": "127.0.0.1:9555", "Origin": "http://attacker.example"},
+            app={"pool": RejectingPool()},
+            match_info={"seed": "abc123", "path": "page/page-guid"},
+        )
+
+        response = asyncio.run(_mod.handle_ws_seed(request))
+
+        assert response.status == 403
+        assert "untrusted" in response.text.lower()
+
+
+class TestHandlerURLRewriting:
+    """Verify handlers rewrite CDP WebSocket URLs to the public cloakserve endpoint."""
 
     def _rewrite_version(self, orig_ws: str, host: str, seed: str | None, scheme: str = "ws") -> str:
         """Replicate the URL rewrite logic from handle_json_version."""

@@ -40,7 +40,7 @@ Drop-in Playwright/Puppeteer replacement for Python and JavaScript.<br>
 Same API, same code — just swap the import. <strong>3 lines of code, 30 seconds to unblock.</strong>
 </p>
 
-- **49 source-level C++ patches** — canvas, WebGL, audio, fonts, GPU, screen, WebRTC, network timing, automation signals, CDP input behavior
+- **58 source-level C++ patches** — canvas, WebGL, audio, fonts, GPU, screen, WebRTC, network timing, automation signals, CDP input behavior
 - **`humanize=True`** — human-like mouse curves, keyboard timing, and scroll patterns. One flag, behavioral detection passes
 - **0.9 reCAPTCHA v3 score** — human-level, server-verified
 - **Passes Cloudflare Turnstile**, FingerprintJS, BrowserScan — tested against 30+ detection sites
@@ -59,7 +59,7 @@ from cloakbrowser import launch
 
 browser = launch()
 page = browser.new_page()
-page.goto("https://protected-site.com")  # no more blocks
+page.goto("https://example.com")
 browser.close()
 ```
 
@@ -69,11 +69,33 @@ import { launch } from 'cloakbrowser';
 
 const browser = await launch();
 const page = await browser.newPage();
-await page.goto('https://protected-site.com');
+await page.goto('https://example.com');
 await browser.close();
 ```
 
 Also works with Puppeteer: `import { launch } from 'cloakbrowser/puppeteer'` ([details](#puppeteer))
+
+**For sites with anti-bot protection**, add a residential proxy and these flags:
+
+```python
+browser = launch(
+    proxy="http://user:pass@residential-proxy:port",  # residential IP, not datacenter
+    geoip=True,       # match timezone + locale to proxy IP
+    headless=False,    # some sites detect headless even with C++ patches
+    humanize=True,     # human-like mouse, keyboard, scroll
+)
+```
+
+```javascript
+const browser = await launch({
+    proxy: 'http://user:pass@residential-proxy:port',
+    geoip: true,
+    headless: false,
+    humanize: true,
+});
+```
+
+See [Troubleshooting](#troubleshooting) for site-specific issues (FingerprintJS, Kasada, reCAPTCHA).
 
 ## Install
 
@@ -128,17 +150,19 @@ Open [http://localhost:8080](http://localhost:8080). Create a profile. Click **L
 
 ---
 
-## Latest: v0.3.26 (Chromium 146.0.7680.177.4)
+## Latest: v0.3.31 (Chromium 146.0.7680.177.5)
 
-- **`launch_context_async()`** — async counterpart to `launch_context()`. Forwards kwargs to `browser.new_context()` for `storage_state`, `permissions`, `extra_http_headers` without a persistent profile folder.
-- **JS `contextOptions` escape hatch** — forward arbitrary options (including `storageState`) to Playwright's `newContext()` from `launchContext()` / `launchPersistentContext()`.
-- **Native SOCKS5 proxy** — `proxy="socks5://user:pass@host:port"` works directly in all launch functions, Python + JS. QUIC/HTTP3 tunnels through SOCKS5 via UDP ASSOCIATE.
-- **Chromium 146 upgrade** — rebased all patches from 145.0.7632.x to 146.0.7680.177
-- **57 fingerprint patches** — additional detection-vector coverage (WebAuthn, AAC audio, window position) and WebGL/canvas consistency fixes
-- **WebRTC IP spoofing** — `--fingerprint-webrtc-ip=auto` resolves your proxy's exit IP and spoofs WebRTC ICE candidates. Auto-injected when using `geoip=True` (no extra network call)
+- **58 fingerprint patches** — rendering consistency improvements across Linux and Windows, corrected GPU/display/graphics parameters to match stock Chrome 146 profiles
+- **Windows native GPU passthrough** — real hardware values pass through directly instead of being spoofed, matching real browser behavior
+- **HTTP proxy inline credentials** — new network-layer support for proxies with inline authentication
+- **`extension_paths`** — load Chrome extensions in all launch functions
+- **Humanize actionability** — auto-wait for visible, enabled, stable elements before humanized actions
+- **Per-call `human_config`** — override humanize settings on individual method calls
+- **Composable JS helpers** — `buildLaunchOptions()` and `humanizeBrowser()` for custom Playwright integrations
+- **Native SOCKS5 proxy** — `proxy="socks5://user:pass@host:port"` works directly in all launch functions, Python + JS. QUIC/HTTP3 tunnels through SOCKS5 via UDP ASSOCIATE
 - **Proxy signal removal** — DNS/connect/SSL timing zeroed, proxy cache headers stripped, Proxy-Connection header leak removed
-- **`cloakserve` CDP multiplexer** — rewritten as a multi-connection CDP proxy with per-connection fingerprint seeds
-- **Humanize CDP isolation** — keyboard events now use isolated worlds and trusted dispatch for better behavioral stealth
+- **Chromium 146 upgrade** — rebased all patches from 145.0.7632.x to 146.0.7680.177
+- **WebRTC IP spoofing** — `--fingerprint-webrtc-ip=auto` resolves your proxy's exit IP and spoofs WebRTC ICE candidates. Auto-injected when using `geoip=True` (no extra network call)
 - **`humanize=True`** — one flag makes all mouse, keyboard, and scroll interactions behave like a real user. Bézier curves, per-character typing, realistic scroll patterns
 - **Stealthy with zero flags** — binary auto-generates a random fingerprint seed at startup. No configuration required
 - **Timezone & locale from proxy IP** — `launch(proxy="...", geoip=True)` auto-detects timezone and locale
@@ -226,7 +250,7 @@ CloakBrowser is a thin wrapper (Python + JavaScript) around a custom-built Chrom
 3. **Every launch** → Playwright or Puppeteer starts with our binary + stealth args
 4. **You write code** → standard Playwright/Puppeteer API, nothing new to learn
 
-The binary includes 49 source-level patches covering canvas, WebGL, audio, fonts, GPU, screen properties, WebRTC, network timing, hardware reporting, automation signal removal, and CDP input behavior mimicking.
+The binary includes 58 source-level patches covering canvas, WebGL, audio, fonts, GPU, screen properties, WebRTC, network timing, hardware reporting, automation signal removal, and CDP input behavior mimicking.
 
 These are compiled into the Chromium binary — not injected via JavaScript, not set via flags.
 
@@ -371,9 +395,16 @@ ctx.close()  # profile saved
 
 # Next run — cookies, localStorage restored automatically
 ctx = launch_persistent_context("./my-profile", headless=False)
+
+# Load Chrome extensions
+ctx = launch_persistent_context(
+    "./my-profile",
+    headless=False,
+    extension_paths=["./my-extension"],
+)
 ```
 
-Supports all the same options as `launch_context()`: `proxy`, `user_agent`, `viewport`, `locale`, `timezone`, `color_scheme`, `geoip`.
+Supports all the same options as `launch_context()`: `proxy`, `user_agent`, `viewport`, `locale`, `timezone`, `color_scheme`, `geoip`, `extension_paths`.
 
 Async version: `launch_persistent_context_async()`.
 
@@ -406,7 +437,7 @@ from cloakbrowser import binary_info, clear_cache, ensure_binary
 
 # Check binary installation status
 print(binary_info())
-# {'version': '146.0.7680.177.3', 'platform': 'linux-x64', 'installed': True, ...}
+# {'version': '146.0.7680.177.5', 'platform': 'linux-x64', 'installed': True, ...}
 
 # Force re-download
 clear_cache()
@@ -740,11 +771,11 @@ browser = await launch_async(args=["--remote-debugging-port=9242"])
 
 | Platform | Chromium | Patches | Status |
 |---|---|---|---|
-| Linux x86_64 | 146 | 57 | ✅ Latest |
-| Linux arm64 (RPi, Graviton) | 146 | 57 | ✅ Latest |
+| Linux x86_64 | 146 | 58 | ✅ Latest |
+| Linux arm64 (RPi, Graviton) | 146 | 58 | ✅ |
 | macOS arm64 (Apple Silicon) | 145 | 26 | ✅ |
 | macOS x86_64 (Intel) | 145 | 26 | ✅ |
-| Windows x86_64 | 146 | 57 | ✅ Latest |
+| Windows x86_64 | 146 | 58 | ✅ Latest |
 
 The wrapper auto-downloads the correct binary for your platform.
 
@@ -807,6 +838,26 @@ page.goto("https://example.com")
 print(page.title())
 browser.close()
 ```
+
+If your framework needs a direct WebSocket endpoint, fetch Chrome's discovery document and use the rewritten `webSocketDebuggerUrl`. The URL points back through `cloakserve` so the CDP proxy can keep per-seed routing intact:
+
+```bash
+curl http://localhost:9222/json/version | jq -r .webSocketDebuggerUrl
+# ws://localhost:9222/devtools/browser/<browser-id>
+
+curl 'http://localhost:9222/json/version?fingerprint=11111' | jq -r .webSocketDebuggerUrl
+# ws://localhost:9222/fingerprint/11111/devtools/browser/<browser-id>
+```
+
+When `cloakserve` runs behind a reverse proxy or TLS terminator, forward the public host/protocol headers so generated WebSocket URLs use the address clients can actually reach:
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Forwarded-Host $host;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+With those headers, `/json/version` returns public endpoints such as `wss://cdp.example.com/fingerprint/11111/devtools/browser/<browser-id>` instead of an internal container host.
 
 Pass extra flags to the browser:
 
@@ -977,6 +1028,51 @@ If you're still blocked after this, check the font setup below.
 
 ---
 
+### Detected by FingerprintJS?
+
+FingerprintJS (`demo.fingerprint.com/playground`) checks multiple signals. Each detection has a specific cause:
+
+| Detection | Cause | Fix |
+|-----------|-------|-----|
+| **`nodriver` / bad bot** | IP reputation or missing flags | Residential proxy + config below |
+| **Browser tampering** | Noise injection detected by ML | `--fingerprint-noise=false` |
+| **Virtual machine** | Screen dimensions don't match viewport | `--fingerprint-screen-width/height` matching viewport |
+| **Incognito** | Storage quota normalized to ~500MB | Expected tradeoff — see below |
+
+Config that passes FPJS (verified on v0.3.30, Linux + Windows):
+
+```python
+browser = launch(
+    headless=False,
+    proxy="http://user:pass@residential-proxy:port",
+    geoip=True,
+    args=[
+        "--fingerprint-noise=false",          # prevents tampering detection
+        "--fingerprint-screen-width=1920",    # match your viewport
+        "--fingerprint-screen-height=1080",
+    ],
+)
+```
+
+```javascript
+const browser = await launch({
+    headless: false,
+    proxy: 'http://user:pass@residential-proxy:port',
+    geoip: true,
+    args: [
+        '--fingerprint-noise=false',
+        '--fingerprint-screen-width=1920',
+        '--fingerprint-screen-height=1080',
+    ],
+});
+```
+
+For persistent contexts (`launch_persistent_context` / `launchPersistentContext`), also add `--fingerprint-storage-quota=500` to the args.
+
+**Storage quota tradeoff:** The binary normalizes storage quota to ~500MB to pass FPJS, but this makes the session look like incognito to other detection services (e.g. BrowserScan's `notPrivate` check, -10 points). Setting `--fingerprint-storage-quota=5000` passes incognito checks but may trigger FPJS. You can't satisfy both simultaneously — choose based on what your target site checks. See the [storage quota tradeoff table](#launch_persistent_context) for details.
+
+---
+
 ### Blocked on Kasada / Akamai sites despite correct config?
 
 On minimal Linux environments, missing font packages cause canvas emoji rendering to produce hashes that anti-bot systems don't recognize. This is the most common cause of blocks on aggressive sites after proxy, geoip, and headed mode are already set up correctly.
@@ -1143,9 +1239,9 @@ A: Yes. Pass `proxy="http://user:pass@host:port"` or `proxy="socks5://user:pass@
 
 | Feature | Status |
 |---------|--------|
-| Linux x64 — Chromium 146 (57 patches) | ✅ Released |
+| Linux x64 — Chromium 146 (58 patches) | ✅ Released |
 | macOS arm64/x64 — Chromium 145 (26 patches) | ✅ Released |
-| Windows x64 — Chromium 146 (57 patches) | ✅ Released |
+| Windows x64 — Chromium 146 (58 patches) | ✅ Released |
 | JavaScript/Puppeteer + Playwright support | ✅ Released |
 | Fingerprint rotation per session | ✅ Released |
 | Built-in proxy rotation | 📋 Planned |
@@ -1167,7 +1263,7 @@ All releases are signed for supply chain verification.
 ```bash
 # Verify GPG signature (binary release tag)
 gpg --keyserver keyserver.ubuntu.com --recv-keys C60C0DDC9D0DE2DD
-git verify-tag chromium-v146.0.7680.177.3
+git verify-tag chromium-v146.0.7680.177.5
 
 # Verify GitHub binary attestation (Sigstore)
 gh attestation verify cloakbrowser-linux-x64.tar.gz --repo CloakHQ/cloakbrowser
@@ -1193,7 +1289,15 @@ Issues and PRs welcome. If something isn't working, [open an issue](https://gith
 - [@evelaa123](https://github.com/evelaa123) — humanize behavior, persistent contexts, Windows fix
 - [@yahooguntu](https://github.com/yahooguntu) — persistent contexts
 - [@kitiho](https://github.com/kitiho) — null viewport fix
-- [@eofreternal](https://github.com/eofreternal) — humanConfig type fix, humanized method option types
+- [@eofreternal](https://github.com/eofreternal) — humanConfig type fix, humanized method option types, iframe pointer-events fix
 - [@manaskarra](https://github.com/manaskarra) — iframe scope fix for humanized frame actions, GeoIP timeout guard
 - [@Youhai020616](https://github.com/Youhai020616) — SOCKS5 credential encoding logging
-- [@AlexTech314](https://github.com/AlexTech314) — AWS Lambda integration
+- [@AlexTech314](https://github.com/AlexTech314) — AWS Lambda integration, cold-start hardening
+- [@dgtlmoon](https://github.com/dgtlmoon) — graceful pw.stop() cleanup
+- [@zackycodes](https://github.com/zackycodes) — Chrome extension loading
+- [@aaronjmars](https://github.com/aaronjmars) — security fixes (shell injection, dep bumps)
+- [@Seryiza](https://github.com/Seryiza) — Nix/NixOS flake
+- [@245678000000](https://github.com/245678000000) — package-lock sync
+- [@honor2030](https://github.com/honor2030) — cloakserve WebSocket origin guard, composable JS launch helpers
+- [@sparanoid](https://github.com/sparanoid) — Docker Xvfb lock cleanup
+- [@0xlally](https://github.com/0xlally) — security reports (cloakserve path traversal, WebSocket origin bypass)

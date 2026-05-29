@@ -84,16 +84,39 @@ describe("puppeteer launch", () => {
     expect(callArgs.args).toContain("--proxy-bypass-list=.google.com,localhost");
   });
 
-  it("monkey-patches newPage for proxy auth", async () => {
-    const { launch } = await import("../src/puppeteer.js");
-    const browser = await launch({ proxy: "http://user:pass@proxy:8080" });
+  it("uses page.authenticate fallback for http proxy on unsupported platform", async () => {
+    const config = await import("../src/config.js");
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("darwin-arm64");
+    try {
+      const { launch } = await import("../src/puppeteer.js");
+      const browser = await launch({ proxy: "http://user:pass@proxy:8080" });
 
-    // newPage should auto-authenticate
-    const page = await browser.newPage();
-    expect(page.authenticate).toHaveBeenCalledWith({
-      username: "user",
-      password: "pass",
-    });
+      const page = await browser.newPage();
+      expect(page.authenticate).toHaveBeenCalledWith({
+        username: "user",
+        password: "pass",
+      });
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("passes inline creds via --proxy-server on supported platform (no page.authenticate)", async () => {
+    const config = await import("../src/config.js");
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("linux-x64");
+    vi.spyOn(config, "getChromiumVersion").mockReturnValue("146.0.7680.177.5");
+    try {
+      const { launch } = await import("../src/puppeteer.js");
+      const browser = await launch({ proxy: "http://user:pass@proxy:8080" });
+
+      const callArgs = vi.mocked(puppeteerMock.default.launch).mock.calls[0][0];
+      expect(callArgs.args).toContain("--proxy-server=http://user:pass@proxy:8080");
+
+      const page = await browser.newPage();
+      expect(page.authenticate).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("injects timezone and locale as binary flags", async () => {
@@ -126,6 +149,14 @@ describe("puppeteer launch", () => {
     expect(page.authenticate).not.toHaveBeenCalled();
   });
 
+  it("forwards launchOptions to puppeteer launch", async () => {
+    const { launch } = await import("../src/puppeteer.js");
+    await launch({ launchOptions: { slowMo: 50 } });
+
+    const callArgs = vi.mocked(puppeteerMock.default.launch).mock.calls[0][0];
+    expect(callArgs.slowMo).toBe(50);
+  });
+
   it("reconstructs SOCKS5 dict with auth into --proxy-server URL", async () => {
     const { launch } = await import("../src/puppeteer.js");
     const browser = await launch({
@@ -137,5 +168,103 @@ describe("puppeteer launch", () => {
 
     const page = await browser.newPage();
     expect(page.authenticate).not.toHaveBeenCalled();
+  });
+});
+
+describe("puppeteer launchPersistentContext", () => {
+  let puppeteerMock: any;
+  let mockBrowser: any;
+
+  beforeEach(async () => {
+    delete process.env.CLOAKBROWSER_BINARY_PATH;
+    puppeteerMock = await import("puppeteer-core");
+    mockBrowser = {
+      newPage: vi.fn().mockResolvedValue({
+        authenticate: vi.fn(),
+      }),
+      close: vi.fn(),
+    };
+    vi.mocked(puppeteerMock.default.launch).mockResolvedValue(mockBrowser);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("passes userDataDir to puppeteer launch", async () => {
+    process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
+    const { launchPersistentContext } = await import("../src/puppeteer.js");
+    await launchPersistentContext({ userDataDir: "./my-profile" });
+
+    expect(puppeteerMock.default.launch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userDataDir: "./my-profile",
+        executablePath: "/fake/chrome",
+      })
+    );
+  });
+
+  it("includes stealth args", async () => {
+    const { launchPersistentContext } = await import("../src/puppeteer.js");
+    await launchPersistentContext({ userDataDir: "./my-profile" });
+
+    const callArgs = vi.mocked(puppeteerMock.default.launch).mock.calls[0][0];
+    expect(callArgs.args.some((a: string) => a.startsWith("--fingerprint="))).toBe(true);
+  });
+
+  it("uses page.authenticate fallback for http proxy in persistent context on unsupported platform", async () => {
+    const config = await import("../src/config.js");
+    vi.spyOn(config, "getPlatformTag").mockReturnValue("darwin-arm64");
+    try {
+      const { launchPersistentContext } = await import("../src/puppeteer.js");
+      const browser = await launchPersistentContext({
+        userDataDir: "./my-profile",
+        proxy: "http://user:pass@proxy:8080",
+      });
+
+      const page = await browser.newPage();
+      expect(page.authenticate).toHaveBeenCalledWith({
+        username: "user",
+        password: "pass",
+      });
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("keeps SOCKS5 credentials in --proxy-server URL", async () => {
+    const { launchPersistentContext } = await import("../src/puppeteer.js");
+    const browser = await launchPersistentContext({
+      userDataDir: "./my-profile",
+      proxy: "socks5://user:pass@proxy:1080",
+    });
+
+    const callArgs = vi.mocked(puppeteerMock.default.launch).mock.calls[0][0];
+    expect(callArgs.args).toContain("--proxy-server=socks5://user:pass@proxy:1080");
+
+    const page = await browser.newPage();
+    expect(page.authenticate).not.toHaveBeenCalled();
+  });
+
+  it("forwards launchOptions to puppeteer launch", async () => {
+    const { launchPersistentContext } = await import("../src/puppeteer.js");
+    await launchPersistentContext({ userDataDir: "./my-profile", launchOptions: { slowMo: 50 } });
+
+    const callArgs = vi.mocked(puppeteerMock.default.launch).mock.calls[0][0];
+    expect(callArgs.slowMo).toBe(50);
+    expect(callArgs.userDataDir).toBe("./my-profile");
+  });
+
+  it("injects timezone and locale as binary flags", async () => {
+    const { launchPersistentContext } = await import("../src/puppeteer.js");
+    await launchPersistentContext({
+      userDataDir: "./my-profile",
+      timezone: "Asia/Tokyo",
+      locale: "ja-JP",
+    });
+
+    const callArgs = vi.mocked(puppeteerMock.default.launch).mock.calls[0][0];
+    expect(callArgs.args).toContain("--fingerprint-timezone=Asia/Tokyo");
+    expect(callArgs.args).toContain("--lang=ja-JP");
   });
 });

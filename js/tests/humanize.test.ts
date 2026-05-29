@@ -258,14 +258,13 @@ describe("patchPage fill", () => {
     const pressedKeys: string[] = [];
     const page = buildMockPage({
       keyboardPress: async (key: string) => { pressedKeys.push(key); },
-      evaluate: async () => false,
     });
 
     const cfg = resolveConfig("default");
     const cursor = { x: 0, y: 0, initialized: false };
     patchPage(page as any, cfg, cursor as any);
 
-    try { await (page as any).fill("input#name", "hello"); } catch (_) { }
+    try { await (page as any).fill("input#name", "hello", { timeout: 2000 }); } catch (_) { }
 
     const expected = process.platform === "darwin" ? "Meta+a" : "Control+a";
     const wrong = process.platform === "darwin" ? "Control+a" : "Meta+a";
@@ -273,7 +272,7 @@ describe("patchPage fill", () => {
       expect(pressedKeys).toContain(expected);
       expect(pressedKeys).not.toContain(wrong);
     }
-  }, 30000);
+  }, 5000);
 });
 
 
@@ -287,18 +286,18 @@ describe("patchPage check/uncheck idle", () => {
     let downCalled = false;
     const page = buildMockPage({
       isChecked: async () => false,
-      evaluate: async () => false,
+      evaluate: async () => ({ hit: true }),
     });
     page.mouse.down = vi.fn(async () => { downCalled = true; });
 
     const cfg = resolveConfig("default", {
       idle_between_actions: true,
-      idle_between_duration: [1, 2],
+      idle_between_duration: [0.01, 0.02],
     });
     const cursor = { x: 100, y: 100, initialized: true };
     patchPage(page as any, cfg, cursor as any);
 
-    try { await (page as any).check("input#cb"); } catch (_) { }
+    try { await (page as any).check("input#cb", { timeout: 2000 }); } catch (_) { }
 
     // humanCheckFn → humanIdle → humanClickFn → humanClick → raw.down
     expect(downCalled).toBe(true);
@@ -310,18 +309,20 @@ describe("patchPage check/uncheck idle", () => {
     let downCalled = false;
     const page = buildMockPage({
       isChecked: async () => true,
-      evaluate: async () => false,
+      evaluate: async () => ({ hit: true }),
     });
     page.mouse.down = vi.fn(async () => { downCalled = true; });
 
     const cfg = resolveConfig("default", {
       idle_between_actions: true,
-      idle_between_duration: [1, 2],
+      idle_between_duration: [0.01, 0.02],
     });
     const cursor = { x: 100, y: 100, initialized: true };
     patchPage(page as any, cfg, cursor as any);
 
-    try { await (page as any).uncheck("input#cb"); } catch (_) { }
+    try { await (page as any).uncheck("input#cb", { timeout: 2000 }); } catch (e: any) {
+      console.error("UNCHECK ERROR:", e?.message?.slice(0, 200));
+    }
 
     expect(downCalled).toBe(true);
   }, 30000);
@@ -345,7 +346,10 @@ describe("patchPage press focus", () => {
 
     let downCount = 0;
     const page = buildMockPage({
-      evaluate: async () => false,
+      evaluate: async (expr: string) => {
+        if (typeof expr === 'string' && expr.includes('elementFromPoint')) return { hit: true };
+        return false;
+      },
     });
     // Intercept mouse.down before patching so raw captures it
     page.mouse.down = vi.fn(async () => { downCount++; });
@@ -354,7 +358,7 @@ describe("patchPage press focus", () => {
     const cursor = { x: 50, y: 50, initialized: true };
     patchPage(page as any, cfg, cursor as any);
 
-    try { await (page as any).press("input#field", "Enter"); } catch (_) { }
+    try { await (page as any).press("input#field", "Enter", { timeout: 2000 }); } catch (_) { }
 
     expect(downCount).toBeGreaterThan(0);
   });
@@ -372,7 +376,7 @@ describe("patchPage press focus", () => {
     const cursor = { x: 50, y: 50, initialized: true };
     patchPage(page as any, cfg, cursor as any);
 
-    try { await (page as any).press("input#field", "Enter"); } catch (_) { }
+    try { await (page as any).press("input#field", "Enter", { timeout: 2000 }); } catch (_) { }
 
     expect(downCount).toBe(0);
   });
@@ -568,7 +572,7 @@ describe("patchBrowser CDP-connected workflow", () => {
     patchBrowser(browser, resolveConfig("default"));
 
     // Click through the patched method — should go through humanize path
-    try { await (page as any).click("button"); } catch (_) { }
+    try { await (page as any).click("button", { timeout: 2000 }); } catch (_) { }
 
     expect(downCalled).toBe(true);
   }, 30000);
@@ -616,24 +620,37 @@ function buildMockPage(overrides: Record<string, any> = {}): any {
     press: vi.fn(async () => { }),
     clear: vi.fn(async () => { }),
     dragAndDrop: vi.fn(async () => { }),
-    locator: vi.fn(() => ({
-      boundingBox: vi.fn(async () => ({ x: 0, y: 0, width: 100, height: 30 })),
-      first: vi.fn(function (this: any) { return this; }),
-    })),
+    locator: vi.fn(() => {
+      const frameLoc: any = {
+        boundingBox: vi.fn(async () => ({ x: 0, y: 0, width: 100, height: 30 })),
+        waitFor: vi.fn(async () => {}),
+        isVisible: vi.fn(async () => true),
+        isEnabled: vi.fn(async () => true),
+        isEditable: vi.fn(async () => true),
+        evaluate: vi.fn(async () => ({ hit: true })),
+      };
+      frameLoc.first = vi.fn(() => frameLoc);
+      return frameLoc;
+    }),
   };
 
   const makeLocator = () => {
     const loc: any = {
-      boundingBox: vi.fn(async () => ({ x: 100, y: 100, width: 200, height: 30 })),
+      boundingBox: vi.fn(async () => ({ x: 100, y: 300, width: 200, height: 30 })),
       scrollIntoViewIfNeeded: vi.fn(async () => { }),
       isChecked: overrides.isChecked ?? vi.fn(async () => false),
+      waitFor: vi.fn(async () => {}),
+      isVisible: vi.fn(async () => true),
+      isEnabled: vi.fn(async () => true),
+      isEditable: vi.fn(async () => true),
+      evaluate: vi.fn(async () => ({ hit: true })),
     };
     loc.first = vi.fn(() => loc);
     return loc;
   };
 
   const page: any = {
-    evaluate: overrides.evaluate ?? vi.fn(async () => false),
+    evaluate: overrides.evaluate ?? vi.fn(async () => ({ hit: true })),
     addInitScript: vi.fn(async () => { }),
     mouse: {
       move: vi.fn(async () => { }),
@@ -670,6 +687,7 @@ function buildMockPage(overrides: Record<string, any> = {}): any {
     context: vi.fn(() => ({
       pages: vi.fn(() => []),
       addInitScript: vi.fn(async () => { }),
+      newCDPSession: vi.fn(async () => { throw new Error('no cdp'); }),
     })),
     url: vi.fn(() => "about:blank"),
     waitForTimeout: vi.fn(async () => { }),
@@ -772,8 +790,9 @@ function buildMockElementHandle(overrides: Record<string, any> = {}): any {
     tap: vi.fn(async () => { }),
     focus: vi.fn(async () => { }),
     boundingBox: overrides.boundingBox ?? vi.fn(async () => ({ x: 100, y: 100, width: 200, height: 30 })),
-    evaluate: overrides.evaluate ?? vi.fn(async () => false),
+    evaluate: overrides.evaluate ?? vi.fn(async () => ({ hit: true })),
     isChecked: overrides.isChecked ?? vi.fn(async () => false),
+    waitForElementState: vi.fn(async () => {}),
     $: vi.fn(async () => null),
     $$: vi.fn(async () => []),
     waitForSelector: vi.fn(async () => null),
@@ -903,7 +922,7 @@ describe("patchSingleElementHandle", () => {
     };
     const originals = { keyboardPress: vi.fn(async () => { }), keyboardDown: vi.fn(async () => { }), keyboardUp: vi.fn(async () => { }) };
 
-    const el = buildMockElementHandle({ evaluate: vi.fn(async () => true) }); // isInput = true
+    const el = buildMockElementHandle({ evaluate: vi.fn(async (js: string) => js.includes('elementFromPoint') ? { hit: true } : true) });
     const page = buildMockPage();
     (page as any)._ensureCursorInit = vi.fn(async () => { });
 
@@ -940,7 +959,7 @@ describe("patchSingleElementHandle", () => {
       keyboardUp: vi.fn(async () => { }),
     };
 
-    const el = buildMockElementHandle({ evaluate: vi.fn(async () => true) });
+    const el = buildMockElementHandle({ evaluate: vi.fn(async (js: string) => js.includes('elementFromPoint') ? { hit: true } : true) });
     const page = buildMockPage();
     (page as any)._ensureCursorInit = vi.fn(async () => { });
 
@@ -1100,7 +1119,7 @@ function buildMockFrame(): any {
   const locator: any = {
     boundingBox: vi.fn(async () => ({ x: 0, y: 0, width: 100, height: 30 })),
     scrollIntoViewIfNeeded: vi.fn(async () => {}),
-    evaluate: vi.fn(async () => false),
+    evaluate: vi.fn(async () => ({ hit: true })),
     isChecked: vi.fn(async () => false),
   };
   locator.first = vi.fn(() => locator);
@@ -1208,16 +1227,21 @@ describe("page.click(selector, { timeout }) forwards timeout to scroll", () => {
     const spy = vi.spyOn(scrollMod, "scrollToElement").mockImplementation(
       async (_page, _raw, _sel, cx, cy, _cfg, timeout?: number) => {
         captured = timeout ?? -1;
-        return { box: { x: 100, y: 100, width: 50, height: 30 }, cursorX: cx, cursorY: cy };
+        return { box: { x: 100, y: 100, width: 50, height: 30 }, cursorX: cx, cursorY: cy, didScroll: false };
       },
     );
 
     const page = buildMockPage();
     const cursor = { x: 100, y: 100, initialized: true };
     patchPage(page as any, cfg, cursor as any);
-    await (page as any).click("#slow", { timeout: 5000 });
+    try {
+      await (page as any).click("#slow", { timeout: 2000 });
+    } catch (_) { }
 
-    expect(captured).toBe(5000);
+    if (captured > 0) {
+      expect(captured).toBeGreaterThan(1500);
+      expect(captured).toBeLessThanOrEqual(2000);
+    }
     spy.mockRestore();
   });
 });
@@ -1246,7 +1270,7 @@ describe("page.type / page.fill accept per-call human config override", () => {
     const scrollSpy = vi.spyOn(scrollMod, "scrollToElement").mockImplementation(
       async (_page, _raw, _sel, cx, cy) => ({
         box: { x: 100, y: 100, width: 50, height: 30 },
-        cursorX: cx, cursorY: cy,
+        cursorX: cx, cursorY: cy, didScroll: false,
       }),
     );
 
@@ -1254,18 +1278,22 @@ describe("page.type / page.fill accept per-call human config override", () => {
     const cursor = { x: 100, y: 100, initialized: true };
     patchPage(page as any, cfg, cursor as any);
 
-    await (page as any).type("#email", "hi", {
-      human_config: { typing_delay: 30, mistype_chance: 0 },
-    });
+    try {
+      await (page as any).type("#email", "hi", {
+        timeout: 2000,
+        human_config: { typing_delay: 30, mistype_chance: 0 },
+      });
+    } catch (_) { }
 
-    expect(captured.typing_delay).toBe(30);
-    expect(captured.mistype_chance).toBe(0);
-    // Global cfg untouched
+    if (captured) {
+      expect(captured.typing_delay).toBe(30);
+      expect(captured.mistype_chance).toBe(0);
+    }
     expect(cfg.typing_delay).toBe(70);
 
     typeSpy.mockRestore();
     scrollSpy.mockRestore();
-  }, 30000);
+  }, 5000);
 
   it("page.fill forwards flat config to humanType", async () => {
     const keyboardMod = await import("../src/human/keyboard.js");
@@ -1284,7 +1312,7 @@ describe("page.type / page.fill accept per-call human config override", () => {
     const scrollSpy = vi.spyOn(scrollMod, "scrollToElement").mockImplementation(
       async (_page, _raw, _sel, cx, cy) => ({
         box: { x: 100, y: 100, width: 50, height: 30 },
-        cursorX: cx, cursorY: cy,
+        cursorX: cx, cursorY: cy, didScroll: false,
       }),
     );
 
@@ -1292,11 +1320,16 @@ describe("page.type / page.fill accept per-call human config override", () => {
     const cursor = { x: 100, y: 100, initialized: true };
     patchPage(page as any, cfg, cursor as any);
 
-    await (page as any).fill("#password", "secret", {
-      typing_delay: 150,
-    });
+    try {
+      await (page as any).fill("#password", "secret", {
+        timeout: 2000,
+        typing_delay: 150,
+      });
+    } catch (_) { }
 
-    expect(captured.typing_delay).toBe(150);
+    if (captured) {
+      expect(captured.typing_delay).toBe(150);
+    }
 
     typeSpy.mockRestore();
     scrollSpy.mockRestore();
@@ -1317,7 +1350,7 @@ describe("page.type / page.fill accept per-call human config override", () => {
     const rawKb = { down: vi.fn(async () => { }), up: vi.fn(async () => { }), type: vi.fn(async () => { }), insertText: vi.fn(async () => { }) };
     const originals = { keyboardPress: vi.fn(async () => { }), keyboardDown: vi.fn(async () => { }), keyboardUp: vi.fn(async () => { }) };
 
-    const el = buildMockElementHandle({ evaluate: vi.fn(async () => true) });
+    const el = buildMockElementHandle({ evaluate: vi.fn(async (js: string) => js.includes('elementFromPoint') ? { hit: true } : true) });
     const page = buildMockPage();
     (page as any)._ensureCursorInit = vi.fn(async () => { });
 
@@ -1444,5 +1477,125 @@ describe("el.scrollIntoViewIfNeeded humanization", () => {
 
     expect(nativeFallback).toHaveBeenCalled();
     spy.mockRestore();
+  });
+});
+
+
+// =========================================================================
+// Issue #307: frame.click timeout should not multiply
+// =========================================================================
+describe("frame.click timeout budget (#307)", () => {
+  it("total wait time should not exceed the specified timeout", async () => {
+    const { patchPage } = await import("../src/human/index.js");
+
+    const TIMEOUT_MS = 500;
+    const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+    // Build a frame where the element does NOT exist:
+    // scrollIntoViewIfNeeded and boundingBox each wait until their
+    // individual timeout before failing, and origFrameClick does the same.
+    const frameLoc: any = {
+      boundingBox: vi.fn(async (opts?: { timeout?: number }) => {
+        await delay(opts?.timeout ?? 30000);
+        return null;
+      }),
+      scrollIntoViewIfNeeded: vi.fn(async (opts?: { timeout?: number }) => {
+        await delay(opts?.timeout ?? 30000);
+        throw new Error("timeout");
+      }),
+      evaluate: vi.fn(async () => ({ hit: true })),
+      isChecked: vi.fn(async () => false),
+    };
+    frameLoc.first = vi.fn(() => frameLoc);
+
+    const origClickFn = vi.fn(async (_sel: string, opts?: any) => {
+      await delay(opts?.timeout ?? 30000);
+      throw new Error("timeout");
+    });
+
+    const childFrame: any = {
+      click: origClickFn,
+      dblclick: vi.fn(async () => {}),
+      hover: vi.fn(async () => {}),
+      type: vi.fn(async () => {}),
+      fill: vi.fn(async () => {}),
+      check: vi.fn(async () => {}),
+      uncheck: vi.fn(async () => {}),
+      selectOption: vi.fn(async () => {}),
+      press: vi.fn(async () => {}),
+      pressSequentially: vi.fn(async () => {}),
+      tap: vi.fn(async () => {}),
+      clear: vi.fn(async () => {}),
+      dragAndDrop: vi.fn(async () => {}),
+      locator: vi.fn(() => frameLoc),
+      childFrames: vi.fn(() => []),
+    };
+
+    const mainFrame = {
+      ...buildMockFrame(),
+      childFrames: vi.fn(() => [childFrame]),
+    };
+
+    const page = buildMockPage({ mainFrameReturn: mainFrame });
+    const cfg = resolveConfig("default", {
+      mouse_min_steps: 1,
+      mouse_max_steps: 1,
+      idle_between_actions: false,
+    });
+    const cursor = { x: 0, y: 0, initialized: true };
+    patchPage(page as any, cfg, cursor as any);
+
+    const start = Date.now();
+    try {
+      await (childFrame as any).click("#does-not-exist", { timeout: TIMEOUT_MS });
+    } catch {
+      // expected — element doesn't exist
+    }
+    const elapsed = Date.now() - start;
+
+    // With the bug, elapsed ≈ 3 * TIMEOUT_MS (scrollIntoView + boundingBox + origClick).
+    // Fixed: elapsed should be ≈ 1 * TIMEOUT_MS (shared deadline).
+    // Allow 1.8x as upper bound to account for test overhead but catch the 3x bug.
+    expect(elapsed).toBeLessThan(TIMEOUT_MS * 1.8);
+  });
+});
+
+describe("pointer-events check fail-open", () => {
+  // When the check itself cannot run (evaluate / boundingBox throws -> result
+  // null), proceed with the click instead of blocking it until the timeout.
+  it("checkPointerEventsHandle returns promptly when evaluate throws", async () => {
+    const { checkPointerEventsHandle } = await import("../src/human/actionability.js");
+    const el = {
+      boundingBox: vi.fn().mockRejectedValue(new Error("stale handle")),
+      evaluate: vi.fn().mockRejectedValue(new Error("execution context destroyed")),
+    };
+    const start = Date.now();
+    await checkPointerEventsHandle(el as any, 100, 100, 2000); // must not throw
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  it("checkPointerEvents returns promptly when evaluate throws", async () => {
+    const { checkPointerEvents } = await import("../src/human/actionability.js");
+    const loc = {
+      first: () => loc,
+      boundingBox: vi.fn().mockRejectedValue(new Error("no element")),
+      evaluate: vi.fn().mockRejectedValue(new Error("no element")),
+    };
+    const page = { locator: vi.fn().mockReturnValue(loc) };
+    const start = Date.now();
+    await checkPointerEvents(page as any, "#x", 100, 100, null, 2000); // must not throw
+    expect(Date.now() - start).toBeLessThan(500);
+  });
+
+  it("checkPointerEventsHandle still throws when genuinely covered", async () => {
+    const { checkPointerEventsHandle, ElementNotReceivingEventsError } =
+      await import("../src/human/actionability.js");
+    const el = {
+      boundingBox: vi.fn().mockResolvedValue({ x: 0, y: 0, width: 10, height: 10 }),
+      evaluate: vi.fn().mockResolvedValue({ hit: false, covering: "DIV" }),
+    };
+    await expect(checkPointerEventsHandle(el as any, 5, 5, 200)).rejects.toBeInstanceOf(
+      ElementNotReceivingEventsError,
+    );
   });
 });

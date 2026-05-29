@@ -70,7 +70,7 @@ Only `url` is required. Everything else is optional.
 
 | Field | Type | Default |
 |---|---|---|
-| `url` | str | required |
+| `url` | str | required — `http://` and `https://` only |
 | `proxy` | str / dict | none — `http://user:pass@host:port` or a Playwright proxy dict |
 | `humanize` | bool | `false` — enable human-like mouse / keyboard / scroll |
 | `human_preset` | str | `"default"` or `"careful"` |
@@ -79,7 +79,6 @@ Only `url` is required. Everything else is optional.
 | `locale` | str | none — BCP-47, e.g. `"en-US"` |
 | `viewport` | `{width,height}` | `1920x947` (cloakbrowser default) |
 | `user_agent` | str | none |
-| `extra_args` | `list[str]` | `[]` — extra Chromium CLI flags |
 
 ### Navigation
 
@@ -102,8 +101,6 @@ Only `url` is required. Everything else is optional.
 | `wait_for_selector` | str | none — CSS or XPath |
 | `wait_for_selector_state` | str | `"visible"` — also `attached` / `detached` / `hidden` |
 | `wait_for_selector_timeout_ms` | int | `30000` |
-| `wait_for_function` | str | none — JS expression returning truthy when ready |
-| `wait_for_function_timeout_ms` | int | `30000` |
 | `wait_ms` | int | none — fixed pause |
 
 ### Capture
@@ -118,7 +115,7 @@ Only `url` is required. Everything else is optional.
 The handler retries transient navigation failures inline within the same Lambda invocation. Two layers, both built-in:
 
 - **Launch retries** — 3 attempts with 0.3 s + 0.6 s backoff. Recovers Xvfb / Chromium spawn races at cold start. Fast and cheap; not configurable.
-- **Strategy retries** — default 1 attempt, configurable via the `retries` event field. Recovers specific post-launch error classes by relaunching with adjusted Chromium args / page-load budgets.
+- **Strategy retries** — default 1 attempt, configurable via the `retries` event field. Recovers specific post-launch error classes by relaunching with adjusted internal Chromium args / page-load budgets.
 
 | Field | Type | Default |
 |---|---|---|
@@ -175,6 +172,22 @@ First invocation in a new container takes ~80–90 s (image extraction, Chromium
 For latency-sensitive use cases: provision concurrency, schedule a CloudWatch/EventBridge warmer ping, or accept the cold tail.
 
 If you see empty/missing dynamic content on cold-start invocations, raise `max_settle_ms` in the event payload (e.g. `25000`) — the default `15000` is tuned for warm runs.
+
+## Security
+
+The handler validates all incoming URLs before navigation:
+
+- **Scheme restriction** — only `http://` and `https://` are accepted. `file://`, `data:`, `javascript:`, and other schemes are rejected.
+- **SSRF protection** — hostnames are resolved before navigation and checked against private, loopback, link-local, reserved, and multicast IP ranges. This blocks access to cloud metadata endpoints (e.g. `169.254.169.254`), localhost services, and internal networks.
+- **Post-navigation re-validation** — the final URL is re-checked after page load and after post-navigation waits to catch server-side redirects to blocked destinations.
+- **No caller-controlled Chromium flags** — the handler does not accept arbitrary CLI flags from the event. Internal retry strategies add flags as needed (e.g. `--ignore-certificate-errors` for cert errors).
+- **No arbitrary JS execution** — `wait_for_function` is not exposed. Use `wait_for_selector` or `smart_wait` instead.
+
+**Limitations**:
+- Post-navigation re-validation prevents response *exfiltration*, but does not prevent the browser from *making* the request. If an internal endpoint has side effects on GET, the request will still reach it before validation rejects the response. Use network-level controls (security groups, VPC) to protect side-effect-bearing internal endpoints.
+- DNS rebinding attacks can bypass pre-navigation IP checks in theory, though the post-navigation re-validation provides a second layer of defense.
+
+**Trust boundary**: if this handler is exposed to untrusted callers (Lambda Function URL, API Gateway without auth, public ALB), add an authentication layer (API Gateway authorizer, IAM auth, etc.). The URL validation above is defense-in-depth, not a substitute for access control.
 
 ## License
 

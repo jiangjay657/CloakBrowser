@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { binaryInfo } from "../src/download.js";
 import { DEFAULT_VIEWPORT, getChromiumVersion } from "../src/config.js";
+import * as config from "../src/config.js";
 
 describe("binaryInfo", () => {
   it("returns correct structure", () => {
@@ -18,6 +19,113 @@ describe("binaryInfo", () => {
       if (orig) process.env.CLOAKBROWSER_CACHE_DIR = orig;
       else delete process.env.CLOAKBROWSER_CACHE_DIR;
     }
+  });
+});
+
+describe("composable Playwright launch helpers", () => {
+  const origBinaryPath = process.env.CLOAKBROWSER_BINARY_PATH;
+
+  beforeEach(() => {
+    process.env.CLOAKBROWSER_BINARY_PATH = "/fake/chrome";
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.resetModules();
+    if (origBinaryPath) {
+      process.env.CLOAKBROWSER_BINARY_PATH = origBinaryPath;
+    } else {
+      delete process.env.CLOAKBROWSER_BINARY_PATH;
+    }
+  });
+
+  it("exports composable helpers from the package entrypoint", async () => {
+    const entry = await import("../src/index.js");
+
+    expect(entry.buildLaunchOptions).toBeTypeOf("function");
+    expect(entry.buildContextOptions).toBeTypeOf("function");
+    expect(entry.humanizeBrowser).toBeTypeOf("function");
+  });
+
+  it("buildContextOptions returns Playwright context options without launching a browser", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { buildContextOptions } = await import("../src/index.js");
+
+    const options = buildContextOptions({
+      userAgent: "Explicit/1.0",
+      viewport: { width: 1280, height: 720 },
+      colorScheme: "dark",
+      contextOptions: {
+        userAgent: "Context/9.9",
+        viewport: { width: 9999, height: 9999 },
+        colorScheme: "light",
+        storageState: "state.json",
+        locale: "de-DE",
+        timezoneId: "Europe/Berlin",
+      },
+    });
+
+    expect(options).toMatchObject({
+      userAgent: "Explicit/1.0",
+      viewport: { width: 1280, height: 720 },
+      colorScheme: "dark",
+      storageState: "state.json",
+    });
+    expect(options.locale).toBeUndefined();
+    expect(options.timezoneId).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("buildContextOptions applies DEFAULT_VIEWPORT by default and allows null viewport", async () => {
+    const { buildContextOptions } = await import("../src/index.js");
+
+    expect(buildContextOptions().viewport).toEqual(DEFAULT_VIEWPORT);
+    expect(buildContextOptions({ viewport: null }).viewport).toBeNull();
+  });
+
+  it("buildLaunchOptions returns Playwright options without launching a browser", async () => {
+    const freshConfig = await import("../src/config.js");
+    vi.spyOn(freshConfig, "getPlatformTag").mockReturnValue("darwin-arm64");
+    try {
+      const { buildLaunchOptions } = await import("../src/index.js");
+
+      const options = await buildLaunchOptions({
+        headless: false,
+        proxy: "http://user:pass@proxy.example:8080",
+        args: ["--custom-flag"],
+        launchOptions: { timeout: 1234 },
+      });
+
+      expect(options.executablePath).toBe("/fake/chrome");
+      expect(options.headless).toBe(false);
+      expect(options.args).toContain("--custom-flag");
+      expect(options.ignoreDefaultArgs).toContain("--enable-automation");
+      expect(options.proxy).toEqual({
+        server: "http://proxy.example:8080",
+        username: "user",
+        password: "pass",
+      });
+      expect(options.timeout).toBe(1234);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it("humanizeBrowser patches an existing browser only when requested", async () => {
+    const { humanizeBrowser } = await import("../src/index.js");
+    const browser = {
+      contexts: () => [],
+      newContext: vi.fn(async () => ({})),
+      newPage: vi.fn(async () => ({ context: () => ({}) })),
+    };
+    const originalNewContext = browser.newContext;
+
+    await humanizeBrowser(browser as any, { humanize: false });
+    expect(browser.newContext).toBe(originalNewContext);
+
+    await humanizeBrowser(browser as any, { humanize: true });
+    expect(browser.newContext).not.toBe(originalNewContext);
   });
 });
 
@@ -243,16 +351,22 @@ describe("launchPersistentContext (unit)", () => {
   });
 
   it("forwards proxy string", async () => {
-    const { launchPersistentContext } = await import("../src/playwright.js");
-    await launchPersistentContext({
-      userDataDir: "/tmp/profile",
-      proxy: "http://user:pass@proxy:8080",
-    });
+    const freshConfig = await import("../src/config.js");
+    vi.spyOn(freshConfig, "getPlatformTag").mockReturnValue("darwin-arm64");
+    try {
+      const { launchPersistentContext } = await import("../src/playwright.js");
+      await launchPersistentContext({
+        userDataDir: "/tmp/profile",
+        proxy: "http://user:pass@proxy:8080",
+      });
 
-    const args = mockChromium.launchPersistentContext.mock.calls[0][1];
-    expect(args.proxy.server).toBe("http://proxy:8080");
-    expect(args.proxy.username).toBe("user");
-    expect(args.proxy.password).toBe("pass");
+      const args = mockChromium.launchPersistentContext.mock.calls[0][1];
+      expect(args.proxy.server).toBe("http://proxy:8080");
+      expect(args.proxy.username).toBe("user");
+      expect(args.proxy.password).toBe("pass");
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   it("forwards userAgent and colorScheme", async () => {

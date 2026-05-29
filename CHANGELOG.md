@@ -8,6 +8,37 @@ Changes are tagged: **[wrapper]** for Python/JS wrapper, **[binary]** for Chromi
 
 ## [Unreleased]
 
+## [0.3.31] — 2026-05-26
+
+- **[wrapper]** Route HTTP proxy credentials through `--proxy-server` flag, removing the need for Playwright's proxy auth handler on HTTP proxies
+- **[wrapper]** JS: export `buildContextOptions` helper for custom context creation (thanks [@honor2030](https://github.com/honor2030), #262)
+- **[wrapper]** Humanize: fix iframe coordinate offset in pointer-events check (thanks [@eofreternal](https://github.com/eofreternal), #303)
+- **[wrapper]** Humanize: use shared deadline for timeout budget in frame and ElementHandle methods (#307)
+- **[docker]** Clean up stale Xvfb lock so container survives restarts (thanks [@sparanoid](https://github.com/sparanoid), #284)
+- **[meta]** Add pip and npm ecosystems to Dependabot, bump GitHub Actions (#309)
+
+## [0.3.30] — 2026-05-21
+
+- **[binary]** New build 146.0.7680.177.5 for Linux x64 + Windows x64 — 58 source-level fingerprint patches (up from 57)
+- **[binary]** Rendering consistency improvements across Linux and Windows — corrected GPU, display, and graphics parameters to match stock Chrome 146 profiles
+- **[binary]** Windows: native GPU/rendering values now pass through directly instead of being spoofed, matching real hardware behavior
+- **[binary]** Storage normalization fix for Windows
+- **[binary]** HTTP proxy inline credential support at the network layer
+- **[wrapper]** Update `PLATFORM_CHROMIUM_VERSIONS` for linux-x64 and windows-x64 to 146.0.7680.177.5
+
+## [0.3.29] — 2026-05-20
+
+- **[wrapper]** **Security**: `cloakserve` — guard WebSocket origins to prevent browser-origin CSRF via CDP proxy (thanks [@0xlally](https://github.com/0xlally) for the report, [@honor2030](https://github.com/honor2030) for the fix, #239, #240)
+- **[wrapper]** **Security**: Lambda example — add URL scheme validation, SSRF protection, post-navigation re-validation, remove unsafe caller-controlled options (#233)
+- **[wrapper]** **Security**: CI — isolate `workflow_dispatch` input to avoid shell injection in attest-release (thanks [@aaronjmars](https://github.com/aaronjmars), #223)
+- **[wrapper]** **Security**: JS — bump tar + transitive deps via npm audit fix (thanks [@aaronjmars](https://github.com/aaronjmars), #222)
+- **[wrapper]** Add `extension_paths` parameter for loading Chrome extensions in all launch functions (thanks [@zackycodes](https://github.com/zackycodes), #210)
+- **[wrapper]** Humanize: add Playwright-style actionability checks — auto-wait for visible, enabled, stable elements before humanized actions (#228)
+- **[wrapper]** JS: export composable launch helpers — `buildLaunchOptions()` and `humanizeBrowser()` for custom Playwright integrations (thanks [@honor2030](https://github.com/honor2030), #244)
+- **[wrapper]** JS: add `launchPersistentContext()` to Puppeteer wrapper (#261)
+- **[wrapper]** Add `flake.nix` for Nix/NixOS (thanks [@Seryiza](https://github.com/Seryiza), #220)
+- **[meta]** JS: sync package-lock metadata (thanks [@245678000000](https://github.com/245678000000), #219)
+
 ## [0.3.28] — 2026-05-11
 
 - **[wrapper]** **Security**: `cloakserve` — sanitize fingerprint seed to prevent path traversal, bind to `127.0.0.1` on bare metal, detect Podman containers (#217)
