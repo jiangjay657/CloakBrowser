@@ -1,11 +1,11 @@
 python -m pip install --upgrade "cloakbrowser[geoip]"
 
-# 显示当前安装信息
-python -m cloakbrowser info
-# Check for and download newer binary
-python -m cloakbrowser update
-# Remove cached binaries
-python -m cloakbrowser clear-cache
+
+
+python -m cloakbrowser install      # 预下载浏览器二进制文件
+python -m cloakbrowser info         # 显示版本、路径、平台信息
+python -m cloakbrowser update       # 检查并下载新版二进制文件
+python -m cloakbrowser clear-cache  # 清理缓存的二进制文件
 
 
 
