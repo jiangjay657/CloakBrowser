@@ -1,9 +1,18 @@
 import calendar
+import base64
+import ctypes
+import hashlib
+import json
 import os
 import random
 import shutil
+import socket
+import struct
 import string
 import tempfile
+import time
+import urllib.parse
+import urllib.request
 from cloakbrowser import launch_persistent_context
 
 USER_DATA_DIR = tempfile.mkdtemp(
@@ -64,6 +73,271 @@ def generate_password():
     chars = required + remaining
     random.shuffle(chars)
     return "".join(chars)
+
+
+class CdpWebSocket:
+    def __init__(self, ws_url):
+        self.ws_url = ws_url
+        self.sock = None
+        self.next_id = 0
+
+    def __enter__(self):
+        parsed = urllib.parse.urlparse(self.ws_url)
+        host = parsed.hostname
+        port = parsed.port or 80
+        path = parsed.path
+        if parsed.query:
+            path += f"?{parsed.query}"
+
+        self.sock = socket.create_connection((host, port), timeout=5)
+        key = base64.b64encode(os.urandom(16)).decode("ascii")
+        request = (
+            f"GET {path} HTTP/1.1\r\n"
+            f"Host: {host}:{port}\r\n"
+            "Upgrade: websocket\r\n"
+            "Connection: Upgrade\r\n"
+            f"Sec-WebSocket-Key: {key}\r\n"
+            "Sec-WebSocket-Version: 13\r\n"
+            "\r\n"
+        )
+        self.sock.sendall(request.encode("ascii"))
+        response = self._read_http_response()
+        accept = base64.b64encode(
+            hashlib.sha1(
+                (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode("ascii")
+            ).digest()
+        ).decode("ascii")
+        if " 101 " not in response or accept not in response:
+            raise RuntimeError("CDP WebSocket 握手失败")
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            finally:
+                self.sock = None
+
+    def send(self, method, params=None):
+        self.next_id += 1
+        message_id = self.next_id
+        self._send_text(
+            json.dumps(
+                {
+                    "id": message_id,
+                    "method": method,
+                    "params": params or {},
+                },
+                separators=(",", ":"),
+            )
+        )
+        while True:
+            message = json.loads(self._recv_text())
+            if message.get("id") != message_id:
+                continue
+            if "error" in message:
+                raise RuntimeError(message["error"])
+            return message.get("result", {})
+
+    def _read_http_response(self):
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = self.sock.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        return data.decode("iso-8859-1", errors="replace")
+
+    def _read_exact(self, size):
+        data = b""
+        while len(data) < size:
+            chunk = self.sock.recv(size - len(data))
+            if not chunk:
+                raise RuntimeError("CDP WebSocket 连接已关闭")
+            data += chunk
+        return data
+
+    def _send_text(self, text):
+        payload = text.encode("utf-8")
+        header = bytearray([0x81])
+        length = len(payload)
+        if length < 126:
+            header.append(0x80 | length)
+        elif length < 65536:
+            header.append(0x80 | 126)
+            header.extend(struct.pack("!H", length))
+        else:
+            header.append(0x80 | 127)
+            header.extend(struct.pack("!Q", length))
+
+        mask = os.urandom(4)
+        masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        self.sock.sendall(bytes(header) + mask + masked)
+
+    def _recv_text(self):
+        while True:
+            first, second = self._read_exact(2)
+            opcode = first & 0x0F
+            masked = bool(second & 0x80)
+            length = second & 0x7F
+            if length == 126:
+                length = struct.unpack("!H", self._read_exact(2))[0]
+            elif length == 127:
+                length = struct.unpack("!Q", self._read_exact(8))[0]
+            mask = self._read_exact(4) if masked else b""
+            payload = self._read_exact(length)
+            if masked:
+                payload = bytes(
+                    byte ^ mask[index % 4] for index, byte in enumerate(payload)
+                )
+
+            if opcode == 1:
+                return payload.decode("utf-8")
+            if opcode == 8:
+                raise RuntimeError("CDP WebSocket 已关闭")
+            if opcode == 9:
+                self._send_pong(payload)
+
+    def _send_pong(self, payload):
+        header = bytearray([0x8A, 0x80 | len(payload)])
+        mask = os.urandom(4)
+        masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
+        self.sock.sendall(bytes(header) + mask + masked)
+
+
+def get_attrs(node):
+    attrs = node.get("attributes", [])
+    return dict(zip(attrs[0::2], attrs[1::2]))
+
+
+def iter_cdp_nodes(node):
+    yield node
+    for key in ("children", "shadowRoots", "pseudoElements"):
+        for child in node.get(key, []) or []:
+            yield from iter_cdp_nodes(child)
+    if node.get("contentDocument"):
+        yield from iter_cdp_nodes(node["contentDocument"])
+
+
+def quad_to_box(quad):
+    xs = quad[0::2]
+    ys = quad[1::2]
+    left = min(xs)
+    top = min(ys)
+    right = max(xs)
+    bottom = max(ys)
+    return {
+        "left": left,
+        "top": top,
+        "right": right,
+        "bottom": bottom,
+        "width": right - left,
+        "height": bottom - top,
+        "center_x": (left + right) / 2,
+        "center_y": (top + bottom) / 2,
+    }
+
+
+def get_hsprotect_challenge_ws_url(timeout=60000):
+    deadline = time.monotonic() + timeout / 1000
+    while time.monotonic() < deadline:
+        with urllib.request.urlopen("http://127.0.0.1:9222/json", timeout=3) as res:
+            targets = json.loads(res.read().decode("utf-8"))
+        for target in targets:
+            url = target.get("url", "")
+            if (
+                target.get("type") == "iframe"
+                and "iframe.hsprotect.net/index.html" in url
+                and "ch_ctx=1" in url
+                and target.get("webSocketDebuggerUrl")
+            ):
+                return target["webSocketDebuggerUrl"]
+        time.sleep(0.25)
+    raise RuntimeError("未找到 hsprotect 可见挑战 iframe 的 CDP target")
+
+
+def get_press_and_hold_box_from_cdp(ws_url, timeout=60000):
+    deadline = time.monotonic() + timeout / 1000
+    with CdpWebSocket(ws_url) as cdp:
+        cdp.send("DOM.enable")
+        while time.monotonic() < deadline:
+            document = cdp.send("DOM.getDocument", {"depth": -1, "pierce": True})
+            for node in iter_cdp_nodes(document["root"]):
+                if node.get("nodeName") != "P":
+                    continue
+                html = cdp.send("DOM.getOuterHTML", {"nodeId": node["nodeId"]}).get(
+                    "outerHTML",
+                    "",
+                )
+                if ">Press and hold</p>" not in html:
+                    continue
+                try:
+                    model = cdp.send("DOM.getBoxModel", {"nodeId": node["nodeId"]})[
+                        "model"
+                    ]
+                except Exception:
+                    continue
+                box = quad_to_box(model["border"])
+                if box["width"] > 0 and box["height"] > 0:
+                    return box
+            time.sleep(0.25)
+    raise RuntimeError("未找到 iframe 内 Press and hold 的可见 p 标签")
+
+
+def move_system_mouse_to_press_and_hold_label(page, timeout=60000):
+    page.wait_for_function(
+        r"""() => {
+            const frame = Array.from(document.querySelectorAll("iframe"))
+                .find((el) => el.title === "Verification challenge"
+                    && el.src.includes("iframe.hsprotect.net")
+                    && el.src.includes("ch_ctx=1"));
+            if (!frame) return false;
+            const rect = frame.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+        }""",
+        timeout=timeout,
+    )
+    page_info = page.evaluate(
+        r"""() => {
+            const frame = Array.from(document.querySelectorAll("iframe"))
+                .find((el) => el.title === "Verification challenge"
+                    && el.src.includes("iframe.hsprotect.net")
+                    && el.src.includes("ch_ctx=1"));
+            const rect = frame.getBoundingClientRect();
+            const chromeLeft = (window.outerWidth - window.innerWidth) / 2;
+            const chromeTop = window.outerHeight - window.innerHeight - chromeLeft;
+            return {
+                frame: {
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height,
+                },
+                chromeLeft,
+                chromeTop,
+                screenX: window.screenX,
+                screenY: window.screenY,
+            };
+        }"""
+    )
+    label_box = get_press_and_hold_box_from_cdp(
+        get_hsprotect_challenge_ws_url(timeout=timeout),
+        timeout=timeout,
+    )
+    viewport_x = page_info["frame"]["left"] + label_box["center_x"]
+    viewport_y = page_info["frame"]["top"] + label_box["center_y"]
+    screen_x = page_info["screenX"] + page_info["chromeLeft"] + viewport_x
+    screen_y = page_info["screenY"] + page_info["chromeTop"] + viewport_y
+
+    ctypes.windll.user32.SetCursorPos(round(screen_x), round(screen_y))
+    return {
+        "viewport_x": viewport_x,
+        "viewport_y": viewport_y,
+        "screen_x": screen_x,
+        "screen_y": screen_y,
+        "frame": page_info["frame"],
+        "label_box": label_box,
+    }
 
 
 context = None
@@ -153,6 +427,13 @@ try:
 
     print("已输入姓名:", first_name, last_name)
     print("点击姓名页 Next 后页面标题:", signup_page.title())
+
+    mouse_target = move_system_mouse_to_press_and_hold_label(signup_page)
+    print(
+        "已移动电脑鼠标到 iframe 内 Press and hold 中心:",
+        f"viewport=({mouse_target['viewport_x']:.1f}, {mouse_target['viewport_y']:.1f})",
+        f"screen=({mouse_target['screen_x']:.1f}, {mouse_target['screen_y']:.1f})",
+    )
 
     print("浏览器将保持打开，按 Enter 关闭...")
     input()
