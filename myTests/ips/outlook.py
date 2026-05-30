@@ -1,5 +1,6 @@
 import calendar
 import base64
+import builtins
 import ctypes
 import hashlib
 import json
@@ -15,13 +16,31 @@ import urllib.parse
 import urllib.request
 from cloakbrowser import launch_persistent_context
 
+DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "Downloads")
+LOG_FILE = os.path.join(DOWNLOAD_DIR, "outlook_run.log")
+SUCCESS_EMAIL_FILE = os.path.join(DOWNLOAD_DIR, "outlook_success_emails.txt")
+
 USER_DATA_DIR = tempfile.mkdtemp(
     prefix="cloak-user-data-",
-    dir=os.path.join(os.path.expanduser("~"), "Downloads"),
+    dir=DOWNLOAD_DIR,
 )
 
 MOUSEEVENTF_LEFTDOWN = 0x0002
 MOUSEEVENTF_LEFTUP = 0x0004
+
+
+def log(*values):
+    message = " ".join(str(value) for value in values)
+    line = f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {message}"
+    builtins.print(line)
+    with open(LOG_FILE, "a", encoding="utf-8") as log_file:
+        log_file.write(line + "\n")
+
+
+def append_success_email(email):
+    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{email}"
+    with open(SUCCESS_EMAIL_FILE, "a", encoding="utf-8") as email_file:
+        email_file.write(line + "\n")
 
 
 def generate_outlook_email_prefix():
@@ -375,9 +394,58 @@ def perform_press_and_hold(mouse_target, hold_seconds=15):
     }
 
 
+def click_cancel_button(page, timeout=60000):
+    page.wait_for_function(
+        r"""() => {
+            const button = document.querySelector("#idBtn_Back");
+            if (document.title !== "Sign in to your account" || !button) {
+                return false;
+            }
+            const rect = button.getBoundingClientRect();
+            const style = getComputedStyle(button);
+            return button.value === "Cancel"
+                && style.display !== "none"
+                && style.visibility !== "hidden"
+                && rect.width > 0
+                && rect.height > 0;
+        }""",
+        timeout=timeout,
+    )
+    target = page.evaluate(
+        r"""() => {
+            const button = document.querySelector("#idBtn_Back");
+            const rect = button.getBoundingClientRect();
+            const chromeLeft = (window.outerWidth - window.innerWidth) / 2;
+            const chromeTop = window.outerHeight - window.innerHeight - chromeLeft;
+            const viewportX = rect.left + rect.width / 2;
+            const viewportY = rect.top + rect.height / 2;
+            return {
+                viewportX,
+                viewportY,
+                screenX: window.screenX + chromeLeft + viewportX,
+                screenY: window.screenY + chromeTop + viewportY,
+                rect: {
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height,
+                },
+            };
+        }"""
+    )
+    ctypes.windll.user32.SetCursorPos(round(target["screenX"]), round(target["screenY"]))
+    time.sleep(0.15)
+    mouse_left_click()
+    return target
+
+
 context = None
 
 try:
+    log("开始执行 Outlook 注册脚本")
+    log("日志文件:", LOG_FILE)
+    log("成功邮箱文件:", SUCCESS_EMAIL_FILE)
+
     context = launch_persistent_context(
         user_data_dir=USER_DATA_DIR,
         headless=False,
@@ -392,6 +460,7 @@ try:
             "--no-default-browser-check",
             "--remote-debugging-port=9222",
             # "--fingerprint-webrtc-ip=185.101.105.249",
+            "--fingerprint-webrtc-ip=auto",
             "--fingerprint-platform=windows",
         ],
     )
@@ -399,8 +468,8 @@ try:
     page = context.new_page()
     page.goto("https://www.microsoft.com/en-us/microsoft-365/outlook/log-in", timeout=60000)
 
-    print("Microsoft 已打开，当前 URL:", page.url)
-    print("页面标题:", page.title())
+    log("Microsoft 已打开，当前 URL:", page.url)
+    log("页面标题:", page.title())
 
     create_account = page.locator(
         'main a[href*="2125440"]:visible',
@@ -411,8 +480,8 @@ try:
     signup_page = new_page_info.value
     signup_page.wait_for_load_state("domcontentloaded", timeout=60000)
 
-    print("点击创建免费账号，当前 URL:", signup_page.url)
-    print("页面标题:", signup_page.title())
+    log("点击创建免费账号，当前 URL:", signup_page.url)
+    log("页面标题:", signup_page.title())
 
     email_prefix, first_name, last_name = generate_outlook_email_prefix()
     full_email = f"{email_prefix}@outlook.com"
@@ -421,8 +490,8 @@ try:
     signup_page.get_by_role("button", name="Next").click(timeout=30000)
     signup_page.get_by_role("heading", name="Create your password").wait_for(timeout=60000)
 
-    print("已输入随机邮箱:", full_email)
-    print("点击 Next 后页面标题:", signup_page.title())
+    log("已输入随机邮箱:", full_email)
+    log("点击 Next 后页面标题:", signup_page.title())
 
     password = generate_password()
     signup_page.locator('input[type="password"][autocomplete="new-password"]').fill(
@@ -432,8 +501,8 @@ try:
     signup_page.get_by_role("button", name="Next").click(timeout=30000)
     signup_page.get_by_role("heading", name="Add some details").wait_for(timeout=60000)
 
-    print("已输入随机密码:", password)
-    print("点击密码页 Next 后页面标题:", signup_page.title())
+    log("已输入随机密码:", password)
+    log("点击密码页 Next 后页面标题:", signup_page.title())
 
     birth_year = random.randint(1980, 2003)
     birth_month = random.randint(1, 12)
@@ -452,38 +521,46 @@ try:
     signup_page.get_by_role("button", name="Next").click(timeout=30000)
     signup_page.get_by_role("heading", name="Add your name").wait_for(timeout=60000)
 
-    print("已输入随机生日:", f"{birth_month_name} {birth_day}, {birth_year}")
-    print("点击生日页 Next 后页面标题:", signup_page.title())
+    log("已输入随机生日:", f"{birth_month_name} {birth_day}, {birth_year}")
+    log("点击生日页 Next 后页面标题:", signup_page.title())
 
     signup_page.locator("#firstNameInput").fill(first_name, timeout=30000)
     signup_page.locator("#lastNameInput").fill(last_name, timeout=30000)
     signup_page.get_by_role("button", name="Next").click(timeout=30000)
     signup_page.wait_for_timeout(5000)
 
-    print("已输入姓名:", first_name, last_name)
-    print("点击姓名页 Next 后页面标题:", signup_page.title())
+    log("已输入姓名:", first_name, last_name)
+    log("点击姓名页 Next 后页面标题:", signup_page.title())
 
     mouse_target = move_system_mouse_to_press_and_hold_label(signup_page)
-    print(
+    log(
         "已移动电脑鼠标到 iframe 内 Press and hold 中心:",
         f"viewport=({mouse_target['viewport_x']:.1f}, {mouse_target['viewport_y']:.1f})",
         f"screen=({mouse_target['screen_x']:.1f}, {mouse_target['screen_y']:.1f})",
     )
     hold_result = perform_press_and_hold(mouse_target)
-    print(
+    log(
         "已执行 Press and hold 操作:",
         f"右移={hold_result['move_right']}px",
         f"长按坐标=({hold_result['hold_x']}, {hold_result['hold_y']})",
         f"时长={hold_result['hold_seconds']}s",
     )
+    cancel_target = click_cancel_button(signup_page)
+    log(
+        "已点击 Sign in to your account 页面的 Cancel 按钮:",
+        f"viewport=({cancel_target['viewportX']:.1f}, {cancel_target['viewportY']:.1f})",
+        f"screen=({cancel_target['screenX']:.1f}, {cancel_target['screenY']:.1f})",
+    )
+    append_success_email(full_email)
+    log("已追加成功邮箱:", full_email)
 
-    print("浏览器将保持打开，按 Enter 关闭...")
+    log("浏览器将保持打开，按 Enter 关闭...")
     input()
 except Exception as exc:
-    print(f"执行出错：{exc}")
+    log(f"执行出错：{exc}")
     raise
 finally:
     if context is not None:
         context.close()
-        print("浏览器已关闭。")
+        log("浏览器已关闭。")
     shutil.rmtree(USER_DATA_DIR, ignore_errors=True)
