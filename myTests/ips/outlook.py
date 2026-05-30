@@ -574,7 +574,7 @@ try:
     append_success_email(full_email, password)
     log("已追加成功邮箱和密码:", full_email)
 
-    wait_before_auto_close(120)
+    wait_before_auto_close(30)
 except Exception as exc:
     log(f"执行出错：{exc}")
     raise
