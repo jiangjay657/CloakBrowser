@@ -20,6 +20,10 @@ USER_DATA_DIR = tempfile.mkdtemp(
     dir=os.path.join(os.path.expanduser("~"), "Downloads"),
 )
 
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+
+
 def generate_outlook_email_prefix():
     first_names = [
         "james", "john", "robert", "michael", "david", "william", "richard", "joseph",
@@ -340,6 +344,37 @@ def move_system_mouse_to_press_and_hold_label(page, timeout=60000):
     }
 
 
+def mouse_left_click(hold_seconds=0.08):
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(hold_seconds)
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
+
+def perform_press_and_hold(mouse_target, hold_seconds=15):
+    start_x = round(mouse_target["screen_x"])
+    start_y = round(mouse_target["screen_y"])
+    move_right = random.randint(0, 20)
+    hold_x = start_x + move_right
+
+    mouse_left_click()
+    time.sleep(0.2)
+    ctypes.windll.user32.SetCursorPos(hold_x, start_y)
+    time.sleep(0.1)
+
+    ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    try:
+        time.sleep(hold_seconds)
+    finally:
+        ctypes.windll.user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
+    return {
+        "move_right": move_right,
+        "hold_x": hold_x,
+        "hold_y": start_y,
+        "hold_seconds": hold_seconds,
+    }
+
+
 context = None
 
 try:
@@ -433,6 +468,13 @@ try:
         "已移动电脑鼠标到 iframe 内 Press and hold 中心:",
         f"viewport=({mouse_target['viewport_x']:.1f}, {mouse_target['viewport_y']:.1f})",
         f"screen=({mouse_target['screen_x']:.1f}, {mouse_target['screen_y']:.1f})",
+    )
+    hold_result = perform_press_and_hold(mouse_target)
+    print(
+        "已执行 Press and hold 操作:",
+        f"右移={hold_result['move_right']}px",
+        f"长按坐标=({hold_result['hold_x']}, {hold_result['hold_y']})",
+        f"时长={hold_result['hold_seconds']}s",
     )
 
     print("浏览器将保持打开，按 Enter 关闭...")
