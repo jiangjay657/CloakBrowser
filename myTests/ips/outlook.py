@@ -460,7 +460,7 @@ try:
             "--no-default-browser-check",
             "--remote-debugging-port=9222",
             # "--fingerprint-webrtc-ip=185.101.105.249",
-            "--fingerprint-webrtc-ip=auto",
+            # "--fingerprint-webrtc-ip=auto", #设置代理时使用
             "--fingerprint-platform=windows",
         ],
     )
