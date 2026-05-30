@@ -37,10 +37,30 @@ def log(*values):
         log_file.write(line + "\n")
 
 
-def append_success_email(email):
-    line = f"{time.strftime('%Y-%m-%d %H:%M:%S')}\t{email}"
+def append_success_email(email, password):
+    line = f"{email} | {password}"
     with open(SUCCESS_EMAIL_FILE, "a", encoding="utf-8") as email_file:
         email_file.write(line + "\n")
+
+
+def wait_before_auto_close(seconds=120):
+    log(f"浏览器将保持打开，{seconds} 秒后自动关闭...")
+    for remaining in range(seconds, 0, -1):
+        if remaining % 10 == 0 or remaining <= 5:
+            log(f"自动关闭倒计时：{remaining} 秒")
+        time.sleep(1)
+
+
+def cleanup_download_cloak_user_data_dirs():
+    prefix = "cloak-user-data-"
+    for entry in os.scandir(DOWNLOAD_DIR):
+        if not entry.name.startswith(prefix) or not entry.is_dir(follow_symlinks=False):
+            continue
+        try:
+            shutil.rmtree(entry.path, ignore_errors=True)
+            log("已清理用户数据目录:", entry.path)
+        except Exception as exc:
+            log("清理用户数据目录失败:", entry.path, exc)
 
 
 def generate_outlook_email_prefix():
@@ -551,11 +571,10 @@ try:
         f"viewport=({cancel_target['viewportX']:.1f}, {cancel_target['viewportY']:.1f})",
         f"screen=({cancel_target['screenX']:.1f}, {cancel_target['screenY']:.1f})",
     )
-    append_success_email(full_email)
-    log("已追加成功邮箱:", full_email)
+    append_success_email(full_email, password)
+    log("已追加成功邮箱和密码:", full_email)
 
-    log("浏览器将保持打开，按 Enter 关闭...")
-    input()
+    wait_before_auto_close(120)
 except Exception as exc:
     log(f"执行出错：{exc}")
     raise
@@ -563,4 +582,4 @@ finally:
     if context is not None:
         context.close()
         log("浏览器已关闭。")
-    shutil.rmtree(USER_DATA_DIR, ignore_errors=True)
+    cleanup_download_cloak_user_data_dirs()
