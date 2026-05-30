@@ -381,9 +381,9 @@ try:
     context = launch_persistent_context(
         user_data_dir=USER_DATA_DIR,
         headless=False,
-        proxy="socks5://14af6435d63a6:b2fc8dbccb@185.101.105.249:12324",
+        # proxy="socks5://14af6435d63a6:b2fc8dbccb@185.101.105.249:12324",
         # geoip=True,
-        timezone="America/Denver",
+        # timezone="America/Denver",
         locale="en-US",
         humanize=True,
         human_preset="careful",
@@ -391,7 +391,7 @@ try:
             "--no-first-run",
             "--no-default-browser-check",
             "--remote-debugging-port=9222",
-            "--fingerprint-webrtc-ip=185.101.105.249",
+            # "--fingerprint-webrtc-ip=185.101.105.249",
             "--fingerprint-platform=windows",
         ],
     )
