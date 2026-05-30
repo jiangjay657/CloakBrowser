@@ -1,4 +1,5 @@
 import calendar
+import os
 import random
 import shutil
 import string
@@ -7,7 +8,7 @@ from cloakbrowser import launch_persistent_context
 
 USER_DATA_DIR = tempfile.mkdtemp(
     prefix="cloak-user-data-",
-    dir=r"C:\Users\jiangj\Downloads",
+    dir=os.path.join(os.path.expanduser("~"), "Downloads"),
 )
 
 def generate_outlook_email_prefix():
